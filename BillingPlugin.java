@@ -51,6 +51,10 @@ public class BillingPlugin implements IPlugin {
 	ServiceConnection mServiceConn = null;
 	Object mServiceLock = new Object();
 	static private final int BUY_REQUEST_CODE = 123450;
+	public static final PurchaseResponse.PurchaseRequestStatus SUCCESSFUL;
+	public static final PurchaseResponse.PurchaseRequestStatus FAILED;
+	public static final PurchaseResponse.PurchaseRequestStatus INVALID_SKU;
+	public static final PurchaseResponse.PurchaseRequestStatus ALREADY_ENTITLED;
 
 	private class MyObserver extends BasePurchasingObserver {
 
@@ -71,18 +75,37 @@ public class BillingPlugin implements IPlugin {
 
 		    //Check purchaseResponse.getPurchaseRequestStatus();
 		    //If SUCCESSFUL, fulfill content;
-			logger.log("=========================================================");
-			String response = purchaseResponse.getPurchaseRequestStatus().toString();
-			if (response.equals("SUCCESSFUL") || response.equals("ALREADY_ENTITLED"))
-			{
-				//mainActivity.unlockSkin();'
-				logger.log("VOILA");
-			}
-			else
-			{
-				logger.log("IAP "+purchaseResponse.getPurchaseRequestStatus().toString());
-			}
+			try {
+				String responseCode = purchaseResponse.getPurchaseRequestStatus().toString();
+				String sku = null;
+				JSONObject jo = new JSONObject(purchaseData);
+				sku = jo.getString("productId");
 
+				if (responseCode.equals("SUCCESSFUL"))
+				{
+					logger.log("{billing} Successfully purchased SKU:", sku);
+					EventQueue.pushEvent(new PurchaseEvent(sku, token, null));
+				}
+				else if(responseCode.equals("ALREADY_ENTITLED"))
+				{
+					logger.log("{billing} WARNING: Already Entitled to the Goods with response code:", responseCode);
+					EventQueue.pushEvent(new PurchaseEvent(null, null, responseCode));					
+				}
+				else if(responseCode.equals("INVALID_SKU"))
+				{
+					logger.log("{billing} WARNING: Ignored null purchase data with response code:", responseCode);
+					EventQueue.pushEvent(new PurchaseEvent(null, null, responseCode));					
+				}				
+				else
+				{
+					logger.log("{billing} WARNING: Ignored null purchase data with response code:", responseCode);
+					EventQueue.pushEvent(new PurchaseEvent(null, null, responseCode));					
+				}
+			} catch (JSONException e) {
+				logger.log("{billing} WARNING: Failed to parse purchase data:", e);
+				e.printStackTrace();
+				EventQueue.pushEvent(new PurchaseEvent(null, null, "failed"));
+			}
 		}
 	} 
 
