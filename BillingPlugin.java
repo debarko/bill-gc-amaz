@@ -33,6 +33,7 @@ import android.util.Log;
 import android.content.ComponentName;
 import android.os.IBinder;
 import android.app.PendingIntent;
+import android.os.Build;
 
 import com.tealeaf.EventQueue;
 import com.tealeaf.event.*;
@@ -43,19 +44,20 @@ import com.amazon.inapp.purchasing.BasePurchasingObserver;
 import com.amazon.inapp.purchasing.PurchasingManager;
 import com.amazon.inapp.purchasing.ItemDataResponse;
 import com.amazon.inapp.purchasing.PurchaseResponse;
+import com.amazon.inapp.purchasing.Receipt;
 
 public class BillingPlugin implements IPlugin {
 	Context _ctx = null;
 	Activity _activity = null;
 	IInAppBillingService mService = null;
 	ServiceConnection mServiceConn = null;
+	public enum DeviceType {
+    	KINDLE, ANDROID
+	}
+	private DeviceType deviceIs = DeviceType.ANDROID;
 	Object mServiceLock = new Object();
 	static private final int BUY_REQUEST_CODE = 123450;
-	public static final PurchaseResponse.PurchaseRequestStatus SUCCESSFUL;
-	public static final PurchaseResponse.PurchaseRequestStatus FAILED;
-	public static final PurchaseResponse.PurchaseRequestStatus INVALID_SKU;
-	public static final PurchaseResponse.PurchaseRequestStatus ALREADY_ENTITLED;
-
+	
 	private class MyObserver extends BasePurchasingObserver {
 
 		public MyObserver(Activity _activity) {
@@ -75,16 +77,14 @@ public class BillingPlugin implements IPlugin {
 
 		    //Check purchaseResponse.getPurchaseRequestStatus();
 		    //If SUCCESSFUL, fulfill content;
+		    logger.log("{billing} Entering Amazon Kindle Billing Plugin Handler");
 			try {
 				String responseCode = purchaseResponse.getPurchaseRequestStatus().toString();
-				String sku = null;
-				JSONObject jo = new JSONObject(purchaseData);
-				sku = jo.getString("productId");
-
 				if (responseCode.equals("SUCCESSFUL"))
 				{
-					logger.log("{billing} Successfully purchased SKU:", sku);
-					EventQueue.pushEvent(new PurchaseEvent(sku, token, null));
+					Receipt receipt = purchaseResponse.getReceipt();
+					logger.log("{billing} Successfully purchased SKU:", receipt.getPurchaseToken());
+					EventQueue.pushEvent(new PurchaseEvent(receipt.getSku(), receipt.getPurchaseToken(), null));
 				}
 				else if(responseCode.equals("ALREADY_ENTITLED"))
 				{
@@ -101,7 +101,7 @@ public class BillingPlugin implements IPlugin {
 					logger.log("{billing} WARNING: Ignored null purchase data with response code:", responseCode);
 					EventQueue.pushEvent(new PurchaseEvent(null, null, responseCode));					
 				}
-			} catch (JSONException e) {
+			} catch (Exception e) {
 				logger.log("{billing} WARNING: Failed to parse purchase data:", e);
 				e.printStackTrace();
 				EventQueue.pushEvent(new PurchaseEvent(null, null, "failed"));
@@ -193,20 +193,50 @@ public class BillingPlugin implements IPlugin {
 	}
 
 	public void onStart() {
-		//logger.log("GOOGLE SAYS "+ ToStringBuilder.reflectionToString(dummy,ToStringStyle.MULTI_LINE_STYLE) + ":::");
-		try {
-			logger.log("being called ================================");
-			PurchasingManager.registerObserver(new MyObserver(_activity));
-		} catch (Exception e) {
-			logger.log("{billing} WARNING: Failure in purchase:", e);
-			e.printStackTrace();
-			StringWriter writer = new StringWriter();
-			PrintWriter printWriter = new PrintWriter( writer );
-			e.printStackTrace( printWriter );
-			printWriter.flush();
+		final PackageManager packageManager = getPackageManager();
 
-			String stackTrace = writer.toString();
-			logger.log("{billing} onstart ======= "+stackTrace);
+		try {
+		    final ApplicationInfo applicationInfo = packageManager.getApplicationInfo(getPackageName(), 0);
+		    if ("com.amazon.venezia".equals(packageManager.getInstallerPackageName(applicationInfo.packageName))) {
+		        // App was installed by Amazon App Store
+		        deviceIs = DeviceType.KINDLE;
+		    }
+		    else if("com.android.vending".equals(packageManager.getInstallerPackageName(applicationInfo.packageName))) {
+		    	// App was installed by Google Play Store
+		        deviceIs = DeviceType.ANDROID;
+		    }
+		    else
+		    {
+		    	// Default Market selected as Google Play Store {defaults}
+		    	deviceIs = DeviceType.ANDROID;
+		    }
+		} catch (final NameNotFoundException e) {
+		    e.printStackTrace();
+		}		
+		switch(deviceIs)
+		{
+			case KINDLE:
+						logger.log("{billing} Switched to KINDLE");
+						try {
+							PurchasingManager.registerObserver(new MyObserver(_activity));
+						} catch (Exception e) {
+							logger.log("{billing} WARNING: Failure in purchase init:", e);
+							e.printStackTrace();
+							StringWriter writer = new StringWriter();
+							PrintWriter printWriter = new PrintWriter( writer );
+							e.printStackTrace( printWriter );
+							printWriter.flush();
+							String stackTrace = writer.toString();
+							logger.log("{billing} onstart stackTrace: "+stackTrace);
+						}
+						break;
+			case ANDROID: 
+						logger.log("{billing} Switched to ANDROID");
+			            break;
+			default: 
+						logger.log("{billing} Switched to ANDROID BY DEFAULT");
+			            deviceIs = DeviceType.ANDROID;
+					 	break;
 		}
 	}
 
@@ -232,8 +262,9 @@ public class BillingPlugin implements IPlugin {
 		}
 	}
 
-	public void purchase(String jsonData) {
+	public void purchaseForKindle(String jsonData) {
 		String sku = null;
+		logger.log("{billing} In transaction purchase for Amazon Kindle");
 		try {
 			JSONObject jsonObject = new JSONObject(jsonData);
 			sku = jsonObject.getString("sku");
@@ -241,9 +272,17 @@ public class BillingPlugin implements IPlugin {
 		} catch (Exception e) {
 			logger.log("{billing} WARNING: Failure in purchase:", e);
 			e.printStackTrace();
+			EventQueue.pushEvent(new PurchaseEvent(sku, null, "failed"));
 		}
 	}
-	/*public void purchase(String jsonData) {
+	
+	public void purchase(String jsonData) {
+		if(deviceIs == DeviceType.KINDLE)
+		{
+			logger.log("{billing} Initiating purchase for Amazon Kindle");
+			purchaseForKindle(jsonData);
+			return;
+		}
 		boolean success = false;
 		String sku = null;
 
@@ -290,7 +329,7 @@ public class BillingPlugin implements IPlugin {
 		if (!success && sku != null) {
 			EventQueue.pushEvent(new PurchaseEvent(sku, null, "failed"));
 		}
-	}*/
+	}
 
 	public void consume(String jsonData) {
 		String token = null;
@@ -299,6 +338,14 @@ public class BillingPlugin implements IPlugin {
 			JSONObject jsonObject = new JSONObject(jsonData);
 			final String TOKEN = jsonObject.getString("token");
 			token = TOKEN;
+
+			if(deviceIs == DeviceType.KINDLE)
+			{
+				logger.log("{billing} Consuming:", TOKEN);
+				logger.log("{billing} Consume suceeded:", TOKEN);
+				EventQueue.pushEvent(new ConsumeEvent(TOKEN, null));
+				return;
+			}
 
 			synchronized (mServiceLock) {
 				if (mService == null) {
@@ -350,7 +397,7 @@ public class BillingPlugin implements IPlugin {
 		ArrayList<String> skus = new ArrayList<String>();
 		ArrayList<String> tokens = new ArrayList<String>();
 		boolean success = false;
-
+		logger.log("{billing}=======getPurchase: "+jsonData);
 		try {
 			logger.log("{billing} Getting prior purchases");
 
@@ -387,7 +434,7 @@ public class BillingPlugin implements IPlugin {
 
 					JSONObject json = new JSONObject(purchaseData);
 					String token = json.getString("purchaseToken");
-
+					logger.log("{billing}====== token: "+token);
 					// TODO: Provide purchase data
 					// TODO: Verify signatures
 
@@ -453,7 +500,7 @@ public class BillingPlugin implements IPlugin {
 				} else {
 					JSONObject jo = new JSONObject(purchaseData);
 					sku = jo.getString("productId");
-
+					logger.log("{billing}==========onReturn: "+jo.toString());
 					if (sku == null) {
 						logger.log("{billing} WARNING: Malformed purchase json");
 					} else {
